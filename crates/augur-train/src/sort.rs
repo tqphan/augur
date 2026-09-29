@@ -82,8 +82,9 @@ impl<'t> Sorter<'t> {
         combine: Option<Combine>,
     ) -> Self {
         assert!(key_len <= record_len && record_len > 0);
-        // Sorting needs a 16-byte slice reference per record as well.
-        let records = (memory / (record_len + 16)).max(1024);
+        // Sorting a run needs, per record, the buffered record, a 16-byte
+        // slice reference and a copy in the sorted output.
+        let records = (memory / (2 * record_len + 16)).max(1024);
         Self {
             tmp,
             name,
@@ -332,7 +333,7 @@ mod tests {
                 .enumerate()
                 .all(|(i, &(k, c))| usize::try_from(k).unwrap() == i && c == 50)
         );
-        assert_eq!(spilled, memory < 5000 * 28);
+        assert_eq!(spilled, memory < 5000 * 40);
     }
 
     #[test]

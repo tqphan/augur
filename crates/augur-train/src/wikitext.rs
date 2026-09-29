@@ -239,7 +239,9 @@ fn is_url(text: &str) -> bool {
     ["http://", "https://", "//", "ftp://", "mailto:"]
         .iter()
         .any(|scheme| {
-            text.len() >= scheme.len() && text[..scheme.len()].eq_ignore_ascii_case(scheme)
+            text.as_bytes()
+                .get(..scheme.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(scheme.as_bytes()))
         })
 }
 
@@ -404,6 +406,11 @@ mod tests {
         assert_eq!(
             plain("[https://x.org Site name] and [http://y.org]."),
             "Site name and ."
+        );
+        // Multi-byte characters where a scheme would be must not panic.
+        assert_eq!(
+            plain("x [a\u{b9}\u{b9}\u{b9}] [\u{e9}]"),
+            "x [a\u{b9}\u{b9}\u{b9}] [\u{e9}]"
         );
     }
 
