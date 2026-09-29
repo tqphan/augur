@@ -1,0 +1,8 @@
+/target/
+/build/
+/out/
+*.pdb
+.vs/
+.vscode/
+.idea/
+CMakeUserPresets.json

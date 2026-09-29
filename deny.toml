@@ -1,0 +1,36 @@
+# cargo-deny configuration.
+#
+# augur is GPL-2.0-or-later. Apache-2.0 is incompatible with GPLv2, so it is
+# deliberately NOT in the allow list: dual-licensed "MIT OR Apache-2.0" crates
+# pass via MIT, while Apache-2.0-only crates are flagged for review.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = [
+    "GPL-2.0-or-later",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unlicense",
+    "CC0-1.0",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

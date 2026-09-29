@@ -1,0 +1,63 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/augur",
+    "crates/augur-core",
+    "crates/augur-text",
+    "crates/augur-lm",
+    "crates/augur-predictors",
+    "crates/augur-user",
+    "crates/augur-lang-en",
+    "crates/augur-train",
+    "crates/augur-cli",
+    "crates/augur-capi",
+    "xtask",
+]
+default-members = [
+    "crates/augur",
+    "crates/augur-core",
+    "crates/augur-text",
+    "crates/augur-lm",
+    "crates/augur-predictors",
+    "crates/augur-user",
+    "crates/augur-lang-en",
+    "crates/augur-train",
+    "crates/augur-cli",
+    "crates/augur-capi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/OWNER/augur"
+publish = false
+
+[workspace.dependencies]
+augur = { path = "crates/augur" }
+augur-core = { path = "crates/augur-core" }
+augur-text = { path = "crates/augur-text" }
+augur-lm = { path = "crates/augur-lm" }
+augur-predictors = { path = "crates/augur-predictors" }
+augur-user = { path = "crates/augur-user" }
+augur-lang-en = { path = "crates/augur-lang-en" }
+
+cbindgen = { version = "0.29.4", default-features = false }
+thiserror = "2.0.21"
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "unwind" # the C API relies on catch_unwind at the FFI boundary
