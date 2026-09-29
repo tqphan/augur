@@ -13,6 +13,14 @@ name = "augur-train"
 path = "src/main.rs"
 
 [dependencies]
+augur-core.workspace = true
+augur-lang-en.workspace = true
+augur-text.workspace = true
+bzip2.workspace = true
+clap.workspace = true
+quick-xml.workspace = true
+rayon.workspace = true
+sha1.workspace = true
 
 [lints]
 workspace = true

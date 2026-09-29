@@ -128,7 +128,7 @@ mod tests {
     use std::borrow::Cow;
     use std::sync::{Arc, Mutex};
 
-    use augur_core::{Token, TokenizedContext, Tokenizer};
+    use augur_core::{Token, TokenSpan, TokenizedContext, Tokenizer};
 
     use super::*;
 
@@ -153,9 +153,15 @@ mod tests {
             }
         }
 
-        fn tokenize(&self, text: &str) -> Vec<Token> {
+        fn tokenize_spans(&self, text: &str) -> Vec<TokenSpan> {
             text.split_whitespace()
-                .map(|w| Token::Word(w.to_lowercase()))
+                .map(|w| {
+                    let start = w.as_ptr() as usize - text.as_ptr() as usize;
+                    TokenSpan {
+                        token: Token::Word(w.to_lowercase()),
+                        span: start..start + w.len(),
+                    }
+                })
                 .collect()
         }
     }

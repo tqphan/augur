@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::fmt;
 
-use crate::{Context, Error, Result, Token, TokenizedContext};
+use crate::{Context, Error, Result, Token, TokenSpan, TokenizedContext};
 
 /// A BCP-47 language tag such as `en` or `de-CH`.
 ///
@@ -46,9 +46,18 @@ pub trait Tokenizer: Send + Sync {
     /// Tokenizes the text around the cursor for prediction.
     fn tokenize_context(&self, context: Context<'_>) -> TokenizedContext;
 
+    /// Tokenizes committed text, inserting [`Token::SentenceStart`] at
+    /// sentence boundaries, and records where each token came from.
+    fn tokenize_spans(&self, text: &str) -> Vec<TokenSpan>;
+
     /// Tokenizes committed text for learning, inserting
     /// [`Token::SentenceStart`] at sentence boundaries.
-    fn tokenize(&self, text: &str) -> Vec<Token>;
+    fn tokenize(&self, text: &str) -> Vec<Token> {
+        self.tokenize_spans(text)
+            .into_iter()
+            .map(|span| span.token)
+            .collect()
+    }
 }
 
 /// Everything language-specific that the engine needs.

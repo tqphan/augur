@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+augur-core.workspace = true
+augur-text.workspace = true
 
 [lints]
 workspace = true

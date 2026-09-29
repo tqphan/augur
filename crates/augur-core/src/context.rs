@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 /// Raw text surrounding the cursor, as supplied by the host application.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Context<'a> {
@@ -26,6 +28,17 @@ pub enum Token {
     SentenceStart,
     /// A normalized word.
     Word(String),
+}
+
+/// A [`Token`] together with the byte range of the input text it was read
+/// from. A [`Token::SentenceStart`] has an empty range at the start of its
+/// sentence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TokenSpan {
+    /// The normalized token.
+    pub token: Token,
+    /// Byte range of the token in the tokenized text.
+    pub span: Range<usize>,
 }
 
 /// A [`Context`] after tokenization and normalization.

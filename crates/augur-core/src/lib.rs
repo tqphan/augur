@@ -16,7 +16,7 @@ mod predictor;
 mod suggestion;
 
 pub use combiner::{Combiner, PredictorOutput};
-pub use context::{Context, Token, TokenizedContext};
+pub use context::{Context, Token, TokenSpan, TokenizedContext};
 pub use error::{Error, Result};
 pub use language::{LanguageId, LanguagePack, Tokenizer};
 pub use predictor::{Candidate, Predictor};
