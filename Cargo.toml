@@ -46,6 +46,7 @@ augur-lang-en = { path = "crates/augur-lang-en" }
 bzip2 = "0.6.1" # default backend is libbz2-rs-sys (pure Rust)
 cbindgen = { version = "0.29.4", default-features = false }
 clap = { version = "4.6.7", features = ["derive"] }
+crc32fast = "1.5.2"
 quick-xml = { version = "0.42.0", features = ["escape-html"] }
 rayon = "1.12.0"
 sha1 = "0.11.0"

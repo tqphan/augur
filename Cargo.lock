@@ -88,6 +88,10 @@ dependencies = [
 [[package]]
 name = "augur-lm"
 version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "thiserror",
+]
 
 [[package]]
 name = "augur-predictors"
@@ -108,6 +112,7 @@ version = "0.1.0"
 dependencies = [
  "augur-core",
  "augur-lang-en",
+ "augur-lm",
  "augur-text",
  "bzip2",
  "clap",
@@ -227,6 +232,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5ca28b0ae3115b884660db4118d803791fd6756b6e88f39c0f3f7859060d7566"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "crc32fast"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+dependencies = [
+ "cfg-if",
 ]
 
 [[package]]

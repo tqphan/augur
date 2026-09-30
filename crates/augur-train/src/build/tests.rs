@@ -62,6 +62,7 @@ impl Arpa {
 
 struct Built {
     arpa: Arpa,
+    arpa_text: String,
     meta: String,
     casing: Option<String>,
     _tmp: TempDir,
@@ -96,8 +97,10 @@ fn build_with(
         tmp_dir: std::env::temp_dir(),
     })
     .unwrap();
+    let arpa_text = fs::read_to_string(&output).unwrap();
     Built {
-        arpa: Arpa::parse(&fs::read_to_string(&output).unwrap()),
+        arpa: Arpa::parse(&arpa_text),
+        arpa_text,
         meta: fs::read_to_string(output.with_extension("meta")).unwrap(),
         casing: fs::read_to_string(output.with_extension("casing")).ok(),
         _tmp: tmp,
@@ -219,6 +222,40 @@ fn stupid_backoff_scores() {
     assert_close(10f64.powf(model.get(&["a"]).unwrap().1.unwrap()), 0.4);
     assert_close(model.prob(&["a"], "a"), 0.4 / 6.0);
     assert!(built.meta.contains("model.normalized = false"));
+}
+
+#[test]
+fn pruned_models_compile_to_the_binary_format() {
+    let corpus = synthetic_corpus(3000);
+    for smoothing in [Smoothing::Mkn, Smoothing::StupidBackoff] {
+        let built = build(&corpus, smoothing, &[1, 2, 3], 1 << 24);
+        let parsed = augur_lm::Arpa::read(built.arpa_text.as_bytes()).unwrap();
+        let mut bytes = Vec::new();
+        augur_lm::write_model(&parsed, &[], &[], &mut bytes).unwrap();
+        let model = augur_lm::Model::from_bytes(bytes).unwrap();
+
+        let reference = &built.arpa;
+        let vocab = reference.vocab();
+        let mut checked = 0;
+        for context in reference.entries.keys().filter(|k| k.len() < 3).take(100) {
+            let context: Vec<&str> = context.iter().map(String::as_str).collect();
+            let ids: Vec<u32> = context.iter().map(|w| model.id(w).unwrap()).collect();
+            for word in &vocab {
+                // Impossible events stay at LOG_ZERO in the binary model.
+                let expected = reference
+                    .prob(&context, word)
+                    .log10()
+                    .max(f64::from(augur_lm::LOG_ZERO));
+                let actual = f64::from(model.log_prob(&ids, model.id(word).unwrap()));
+                assert!(
+                    (expected - actual).abs() < 0.05,
+                    "{smoothing:?} {context:?} {word}: {expected} vs {actual}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 1000);
+    }
 }
 
 #[test]

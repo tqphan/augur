@@ -59,6 +59,11 @@ impl Meta {
             .map(|(_, v)| v.as_str())
     }
 
+    /// All `key`, `value` pairs in insertion order.
+    pub fn entries(&self) -> &[(String, String)] {
+        &self.entries
+    }
+
     /// Writes the metadata to `path`.
     ///
     /// # Errors

@@ -5,9 +5,9 @@ Word prediction library in Rust, in the spirit of
 it suggests the next word or completes the current one. It runs on Windows,
 Linux and macOS, and has a C API and a header-only C++17 wrapper.
 
-> Status: the tokenizer, English language pack and training pipeline
-> (`augur-train`) work; the model format, predictors and user model are
-> not implemented yet.
+> Status: the tokenizer, English language pack, training pipeline
+> (`augur-train`) and binary model format (`augur-lm`) work; the predictors
+> and user model are not implemented yet.
 
 ## Layout
 
@@ -20,8 +20,9 @@ Linux and macOS, and has a C API and a header-only C++17 wrapper.
 | `bindings/tests` | C and C++ (Catch2) SDK tests |
 | `crates/augur-text` | Unicode (UAX #29) tokenizer and normalization shared by training and prediction |
 | `crates/augur-lang-en` | English language pack |
-| `crates/augur-train` | Training tool: Wikipedia dump → corpus → ARPA n-gram model |
-| `crates/augur-lm`, `-predictors`, `-user`, `-cli` | Placeholders for later phases |
+| `crates/augur-train` | Training tool: Wikipedia dump → corpus → ARPA n-gram model → binary model |
+| `crates/augur-lm` | Binary n-gram model format: ARPA import, writer and reader |
+| `crates/augur-predictors`, `-user`, `-cli` | Placeholders for later phases |
 | `xtask` | Developer tasks |
 
 ## Building
@@ -60,13 +61,23 @@ Download a Simple English Wikipedia dump from
 ```sh
 cargo run --release -p augur-train -- extract simplewiki-YYYYMMDD-pages-articles.xml.bz2 -o corpus.txt
 cargo run --release -p augur-train -- build corpus.txt -o model.arpa
+cargo run --release -p augur-train -- compile model.arpa -o en.bin
 ```
 
 `extract` writes `corpus.txt` (one tokenized sentence per line),
 `corpus.casing` (usual capitalization of words such as `London`) and
 `corpus.meta` (source file, SHA-1 to compare with Wikimedia's `sha1sums`
 file, license and attribution). `build` writes `model.arpa` plus
-`model.casing` and `model.meta`.
+`model.casing` and `model.meta`. `compile` packs all three into `en.bin`,
+the single file augur loads (any ARPA file works, e.g. from KenLM; the
+sidecar files are optional).
+
+The binary model holds a sorted vocabulary, one sorted array of
+fixed-width records per n-gram order, probabilities and back-off weights
+quantized to 8 bits per order, the casing table and the provenance
+metadata, each section protected by a CRC-32. The Simple English
+Wikipedia model (3-gram, 100k words) compiles from a 134 MB ARPA file to
+35 MB and loads in about 25 ms.
 
 Main `build` options (see `--help`):
 

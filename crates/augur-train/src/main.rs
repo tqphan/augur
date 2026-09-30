@@ -5,6 +5,7 @@ use std::process::ExitCode;
 
 use augur_train::Result;
 use augur_train::build::{self, BuildOptions, MAX_ORDER, Smoothing};
+use augur_train::compile::{self, CompileOptions};
 use augur_train::extract::{self, ExtractOptions};
 use clap::{Args, Parser, Subcommand};
 
@@ -25,6 +26,18 @@ enum Command {
     Extract(ExtractArgs),
     /// Build an n-gram model (ARPA) from a tokenized corpus.
     Build(BuildArgs),
+    /// Convert an ARPA model to augur's binary format.
+    Compile(CompileArgs),
+}
+
+#[derive(Args)]
+struct CompileArgs {
+    /// ARPA model; `.casing` and `.meta` files next to it are packed in if
+    /// they exist.
+    arpa: PathBuf,
+    /// Output binary model (e.g. en.bin).
+    #[arg(short, long)]
+    output: PathBuf,
 }
 
 #[derive(Args)]
@@ -128,6 +141,10 @@ fn run(cli: Cli) -> Result<()> {
             alpha: args.alpha,
             memory: args.mem,
             tmp_dir: args.tmp_dir.unwrap_or_else(std::env::temp_dir),
+        }),
+        Command::Compile(args) => compile::run(&CompileOptions {
+            arpa: args.arpa,
+            output: args.output,
         }),
     }
 }

@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 augur-core.workspace = true
 augur-lang-en.workspace = true
+augur-lm.workspace = true
 augur-text.workspace = true
 bzip2.workspace = true
 clap.workspace = true
