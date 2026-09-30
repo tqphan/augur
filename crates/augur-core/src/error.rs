@@ -10,6 +10,15 @@ pub enum Error {
     #[error("invalid configuration: {0}")]
     Config(String),
 
+    /// No built-in language pack exists for the language.
+    #[error("unsupported language: {0}")]
+    UnsupportedLanguage(String),
+
+    /// A model file is corrupted, has an unsupported format or does not fit
+    /// the configuration.
+    #[error("invalid model: {0}")]
+    InvalidModel(String),
+
     /// An I/O error, e.g. while opening a model or user store.
     #[error(transparent)]
     Io(#[from] std::io::Error),

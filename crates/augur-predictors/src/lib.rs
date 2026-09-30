@@ -1,3 +1,8 @@
 //! Predictor implementations for augur.
 //!
-//! Placeholder: implemented in a later roadmap phase.
+//! - [`NgramPredictor`]: next-word prediction and word completion from a
+//!   static back-off n-gram model ([`augur_lm::Model`]).
+
+mod ngram;
+
+pub use ngram::NgramPredictor;

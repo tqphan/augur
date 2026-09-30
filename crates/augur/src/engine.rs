@@ -1,7 +1,15 @@
+use std::borrow::Cow;
+use std::path::Path;
+
 use augur_core::{
     Candidate, Combiner, Context, Error, LanguageId, LanguagePack, Predictor, PredictorOutput,
     Result, SourceMask, Suggestion,
 };
+use augur_lang_en::EnglishPack;
+use augur_lm::Model;
+use augur_predictors::NgramPredictor;
+
+use crate::LinearCombiner;
 
 /// A configured prediction engine.
 ///
@@ -16,6 +24,44 @@ impl Engine {
     /// Starts building an engine.
     pub fn builder() -> EngineBuilder {
         EngineBuilder::default()
+    }
+
+    /// Creates an engine for a language from an n-gram model file, with the
+    /// built-in language pack for `language` (a BCP-47 tag; only English,
+    /// `en` and its regional variants, is built in so far), an
+    /// [`NgramPredictor`] and a [`LinearCombiner`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::InvalidLanguageTag`] or [`Error::UnsupportedLanguage`] for
+    /// the language; [`Error::Io`] if the model cannot be read;
+    /// [`Error::InvalidModel`] if it is invalid or its metadata names a
+    /// different language.
+    pub fn from_model(language: &str, model: impl AsRef<Path>) -> Result<Self> {
+        let id = LanguageId::new(language)?;
+        let primary = id
+            .as_str()
+            .split('-')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let builder = match primary.as_str() {
+            "en" => Engine::builder().language(EnglishPack::new()),
+            _ => return Err(Error::UnsupportedLanguage(id.to_string())),
+        };
+        let model = Model::open(model).map_err(model_error)?;
+        if let Some(trained) = model.meta_value("language")
+            && !trained.eq_ignore_ascii_case(&primary)
+        {
+            return Err(Error::InvalidModel(format!(
+                "the model is for language {trained:?}, not {:?}",
+                id.as_str()
+            )));
+        }
+        builder
+            .predictor(NgramPredictor::new(model))
+            .combiner(LinearCombiner::new())
+            .build()
     }
 
     /// The language this engine predicts for.
@@ -49,7 +95,15 @@ impl Engine {
         let mut suggestions = self.combiner.combine(&outputs, max);
         suggestions.truncate(max);
         for suggestion in &mut suggestions {
-            suggestion.text = self.language.restore_case(&suggestion.text, &tokenized);
+            let text = {
+                let display = self
+                    .predictors
+                    .iter()
+                    .find_map(|p| p.display_form(&suggestion.text))
+                    .unwrap_or(Cow::Borrowed(&suggestion.text));
+                self.language.restore_case(&display, &tokenized)
+            };
+            suggestion.text = text;
         }
         suggestions
     }
@@ -60,6 +114,13 @@ impl Engine {
         for predictor in &self.predictors {
             predictor.learn(&tokens);
         }
+    }
+}
+
+fn model_error(error: augur_lm::Error) -> Error {
+    match error {
+        augur_lm::Error::Io(e) => Error::Io(e),
+        other => Error::InvalidModel(other.to_string()),
     }
 }
 
@@ -298,6 +359,65 @@ mod tests {
             *learned.lock().unwrap(),
             [Token::Word("good".into()), Token::Word("morning".into())]
         );
+    }
+
+    fn tiny_model() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/tiny.bin")
+    }
+
+    fn texts(suggestions: &[Suggestion]) -> Vec<&str> {
+        suggestions.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn predicts_from_a_model() {
+        let engine = Engine::from_model("en-GB", tiny_model()).unwrap();
+        assert_eq!(engine.language().as_str(), "en");
+
+        // Casing from the model's table, then sentence-start capitals.
+        let out = engine.predict(Context::past("I live in "), 2);
+        assert_eq!(texts(&out), ["London", "Paris"]);
+        let out = engine.predict(Context::past("I live in l"), 3);
+        assert_eq!(texts(&out), ["London", "live", "love"]);
+        let out = engine.predict(Context::past("I live in Lon"), 3);
+        assert_eq!(texts(&out), ["London"]);
+        assert!((out[0].prob - 1.0).abs() < 1e-6);
+        let out = engine.predict(Context::past("We went there. "), 1);
+        assert_eq!(texts(&out), ["The"]);
+        let out = engine.predict(Context::past("the cat "), 3);
+        assert!(texts(&out).contains(&"sat"), "{out:?}");
+        assert!(out.windows(2).all(|w| w[0].prob >= w[1].prob));
+        assert!(out.iter().all(|s| s.sources.contains(0)));
+
+        // Probabilities are conditioned on the prefix.
+        let out = engine.predict(Context::past("the "), 100);
+        let sum: f32 = out.iter().map(|s| s.prob).sum();
+        assert!((sum - 1.0).abs() < 1e-4, "{sum}");
+
+        // The word after the cursor is not suggested again.
+        let out = engine.predict(Context::new("I live in ", " London"), 1);
+        assert_eq!(texts(&out), ["Paris"]);
+    }
+
+    #[test]
+    fn from_model_reports_errors() {
+        assert!(matches!(
+            Engine::from_model("de", tiny_model()),
+            Err(Error::UnsupportedLanguage(tag)) if tag == "de"
+        ));
+        assert!(matches!(
+            Engine::from_model("en_US", tiny_model()),
+            Err(Error::InvalidLanguageTag(_))
+        ));
+        assert!(matches!(
+            Engine::from_model("en", tiny_model().with_extension("missing")),
+            Err(Error::Io(_))
+        ));
+        let arpa = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../testdata/corpus.txt");
+        assert!(matches!(
+            Engine::from_model("en", arpa),
+            Err(Error::InvalidModel(_))
+        ));
     }
 
     #[test]

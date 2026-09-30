@@ -15,13 +15,21 @@
 // incompatible change; compare with `augur_abi_version()` at runtime.
 #define AUGUR_ABI_VERSION 0
 
+// A prediction engine. Thread-safe: one engine may be used from several
+// threads at once.
+typedef struct augur_engine augur_engine;
+
+// A list of suggestions returned by `augur_predict`, most likely first.
+typedef struct augur_suggestions augur_suggestions;
+
 // Result code returned by fallible functions.
 typedef int32_t augur_status;
 
 // The call succeeded.
 #define AUGUR_STATUS_OK 0
 
-// An argument was null, out of range, or not valid UTF-8.
+// An argument was null, out of range, or not valid UTF-8, or the language
+// is not supported.
 #define AUGUR_STATUS_INVALID_ARGUMENT 1
 
 // An I/O error occurred, e.g. while opening a model.
@@ -29,6 +37,10 @@ typedef int32_t augur_status;
 
 // An internal error or panic occurred inside the library.
 #define AUGUR_STATUS_INTERNAL 3
+
+// A model file is corrupted, has an unsupported format, or is for another
+// language.
+#define AUGUR_STATUS_INVALID_MODEL 4
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +56,103 @@ const char *augur_version(void);
 // Returns a static, NUL-terminated description of `status`. Unknown values
 // return `"unknown status"`. The caller must not free it.
 const char *augur_status_str(augur_status status);
+
+// Returns a NUL-terminated message describing the most recent failed call
+// on the calling thread, or an empty string if no call has failed. The
+// string is owned by the library and stays valid until the next failing
+// call on the same thread.
+const char *augur_last_error(void);
+
+// Creates an engine for `language` (a BCP-47 tag such as `"en"` or
+// `"en-US"`) from the n-gram model file at `model_path`, and stores it in
+// `*out`. Release it with `augur_engine_free`.
+//
+// Returns `AUGUR_STATUS_INVALID_ARGUMENT` for a malformed or unsupported
+// language, `AUGUR_STATUS_IO` if the model cannot be read and
+// `AUGUR_STATUS_INVALID_MODEL` if it is invalid.
+//
+// # Safety
+//
+// `language` and `model_path` must point to at least `language_len` and
+// `model_path_len` readable bytes (or be NULL with length 0), and `out`
+// must be a valid pointer to write to.
+augur_status augur_engine_new(const char *language,
+                              size_t language_len,
+                              const char *model_path,
+                              size_t model_path_len,
+                              augur_engine **out);
+
+// Releases an engine. NULL is ignored.
+//
+// # Safety
+//
+// `engine` must be NULL or a pointer from `augur_engine_new` that has not
+// been freed, and no other thread may be using it.
+void augur_engine_free(augur_engine *engine);
+
+// Predicts up to `max` words for the text around the cursor: `past` is
+// the text before it and `future` the text after it (may be empty). The
+// result is stored in `*out`, even when empty; release it with
+// `augur_suggestions_free`.
+//
+// # Safety
+//
+// `engine` must be a live engine; `past` and `future` must point to at
+// least `past_len` and `future_len` readable bytes (or be NULL with length
+// 0); `out` must be a valid pointer to write to.
+augur_status augur_predict(const augur_engine *engine,
+                           const char *past,
+                           size_t past_len,
+                           const char *future,
+                           size_t future_len,
+                           size_t max,
+                           augur_suggestions **out);
+
+// Feeds committed text to the engine so that predictors can learn from
+// it. (The n-gram predictor is static; this matters once learning
+// predictors are added.)
+//
+// # Safety
+//
+// `engine` must be a live engine and `text` must point to at least
+// `text_len` readable bytes (or be NULL with length 0).
+augur_status augur_learn(const augur_engine *engine, const char *text, size_t text_len);
+
+// Number of suggestions in `list` (0 for NULL).
+//
+// # Safety
+//
+// `list` must be NULL or a live list from `augur_predict`.
+size_t augur_suggestions_len(const augur_suggestions *list);
+
+// Stores the text of suggestion `index` in `*text` (UTF-8, also
+// NUL-terminated) and its length in bytes, without the NUL, in `*len`.
+// The text stays valid until the list is freed.
+//
+// # Safety
+//
+// `list` must be a live list from `augur_predict`; `text` and `len` must
+// be valid pointers to write to.
+augur_status augur_suggestions_text(const augur_suggestions *list,
+                                    size_t index,
+                                    const char **text,
+                                    size_t *len);
+
+// Stores the probability of suggestion `index`, in `0..=1`, in `*prob`.
+//
+// # Safety
+//
+// `list` must be a live list from `augur_predict`; `prob` must be a valid
+// pointer to write to.
+augur_status augur_suggestions_prob(const augur_suggestions *list, size_t index, float *prob);
+
+// Releases a suggestion list. NULL is ignored.
+//
+// # Safety
+//
+// `list` must be NULL or a pointer from `augur_predict` that has not been
+// freed.
+void augur_suggestions_free(augur_suggestions *list);
 
 #ifdef __cplusplus
 }  // extern "C"

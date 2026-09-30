@@ -57,12 +57,16 @@ name = "augur"
 version = "0.1.0"
 dependencies = [
  "augur-core",
+ "augur-lang-en",
+ "augur-lm",
+ "augur-predictors",
 ]
 
 [[package]]
 name = "augur-capi"
 version = "0.1.0"
 dependencies = [
+ "augur",
  "cbindgen",
 ]
 
@@ -96,6 +100,10 @@ dependencies = [
 [[package]]
 name = "augur-predictors"
 version = "0.1.0"
+dependencies = [
+ "augur-core",
+ "augur-lm",
+]
 
 [[package]]
 name = "augur-text"

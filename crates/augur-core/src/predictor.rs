@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::{Token, TokenizedContext};
 
 /// A word proposed by a single [`Predictor`].
@@ -21,4 +23,13 @@ pub trait Predictor: Send + Sync {
     /// Learns from committed text. The default does nothing, for static
     /// predictors.
     fn learn(&self, _tokens: &[Token]) {}
+
+    /// The usual display form of a normalized word, if this predictor knows
+    /// one (e.g. `London` for `london`). The engine asks its predictors in
+    /// order and uses the first answer; the language pack then applies
+    /// context-dependent casing such as sentence-initial capitals. The
+    /// default knows none.
+    fn display_form(&self, _word: &str) -> Option<Cow<'_, str>> {
+        None
+    }
 }

@@ -1,0 +1,17 @@
+the cat sat on the mat
+the cat ate the fish
+the dog sat on the sofa
+the dog ran to the park
+i live in london
+i live in paris
+i love my cat
+i love the park in london
+we went to london in <num>
+she went to the park with the dog
+he said the cat was hungry
+they said the dog was happy
+my cat is happy
+my dog is hungry
+the park is big
+london is a big city
+paris is a big city too

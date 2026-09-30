@@ -10,6 +10,9 @@ publish.workspace = true
 
 [dependencies]
 augur-core.workspace = true
+augur-lang-en.workspace = true
+augur-lm.workspace = true
+augur-predictors.workspace = true
 
 [lints]
 workspace = true

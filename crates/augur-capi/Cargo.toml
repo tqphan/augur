@@ -12,6 +12,7 @@ publish.workspace = true
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
+augur.workspace = true
 
 [build-dependencies]
 cbindgen.workspace = true
