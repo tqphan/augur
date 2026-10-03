@@ -55,6 +55,78 @@ static void test_predict(void) {
     augur_engine_free(engine);
 }
 
+static int top_is(augur_engine *engine, const char *past, const char *word) {
+    augur_suggestions *list = NULL;
+    const char *text = NULL;
+    size_t len = 0;
+    int ok = augur_predict(engine, past, strlen(past), NULL, 0, 1, &list) ==
+                 AUGUR_STATUS_OK &&
+             augur_suggestions_len(list) == 1 &&
+             augur_suggestions_text(list, 0, &text, &len) == AUGUR_STATUS_OK &&
+             strcmp(text, word) == 0;
+    augur_suggestions_free(list);
+    return ok;
+}
+
+static void test_user_model(void) {
+    const char *store = AUGUR_TEST_STORE;
+    const char *path = AUGUR_TEST_MODEL;
+    remove(store);
+
+    augur_options *options = NULL;
+    CHECK(augur_options_new(&options) == AUGUR_STATUS_OK);
+    CHECK(augur_options_set_user_store(options, store, strlen(store)) ==
+          AUGUR_STATUS_OK);
+    CHECK(augur_options_set_weights(options, 0.6f, 0.3f, 0.1f) == AUGUR_STATUS_OK);
+    CHECK(augur_options_set_weights(options, -1.0f, 0.0f, 0.0f) ==
+          AUGUR_STATUS_INVALID_ARGUMENT);
+    CHECK(augur_options_set_user_limits(options, 1000, 0, 256) == AUGUR_STATUS_OK);
+    CHECK(augur_options_set_recency(options, 100, 10.0f) == AUGUR_STATUS_OK);
+    CHECK(augur_options_set_learning(options, true) == AUGUR_STATUS_OK);
+
+    augur_engine *engine = NULL;
+    CHECK(augur_engine_new_with_options("en", 2, path, strlen(path), options,
+                                        &engine) == AUGUR_STATUS_OK);
+    if (engine == NULL) {
+        fprintf(stderr, "augur_engine_new_with_options: %s\n", augur_last_error());
+        augur_options_free(options);
+        return;
+    }
+    CHECK(augur_is_learning(engine));
+    /* Word by word, as a keyboard would commit them. */
+    const char *words[] = {"I", "like", "Zanzibar", "a", "lot."};
+    for (size_t i = 0; i < sizeof words / sizeof *words; i++) {
+        CHECK(augur_learn(engine, words[i], strlen(words[i])) == AUGUR_STATUS_OK);
+    }
+    CHECK(top_is(engine, "I like ", "Zanzibar"));
+
+    /* The store is locked while the engine is open. */
+    augur_engine *second = NULL;
+    CHECK(augur_engine_new_with_options("en", 2, path, strlen(path), options,
+                                        &second) == AUGUR_STATUS_USER_STORE);
+    CHECK(augur_flush(engine) == AUGUR_STATUS_OK);
+    augur_engine_free(engine);
+
+    /* Reopened: still learned. */
+    engine = NULL;
+    CHECK(augur_engine_new_with_options("en", 2, path, strlen(path), options,
+                                        &engine) == AUGUR_STATUS_OK);
+    CHECK(top_is(engine, "I like ", "Zanzibar"));
+    CHECK(augur_forget(engine, "zanzibar", 8) == AUGUR_STATUS_OK);
+    CHECK(!top_is(engine, "I like ", "Zanzibar"));
+
+    CHECK(augur_set_learning(engine, false) == AUGUR_STATUS_OK);
+    CHECK(!augur_is_learning(engine));
+    CHECK(augur_learn(engine, "I like Zanzibar.", 16) == AUGUR_STATUS_OK);
+    CHECK(!top_is(engine, "I like ", "Zanzibar"));
+    CHECK(augur_set_learning(engine, true) == AUGUR_STATUS_OK);
+    CHECK(augur_reset_learning_context(engine) == AUGUR_STATUS_OK);
+    CHECK(augur_clear(engine) == AUGUR_STATUS_OK);
+    augur_engine_free(engine);
+    augur_options_free(options);
+    remove(store);
+}
+
 static void test_errors(void) {
     augur_engine *engine = NULL;
     const char *missing = "no-such-model.bin";
@@ -80,9 +152,11 @@ int main(void) {
 
     CHECK(strcmp(augur_status_str(AUGUR_STATUS_OK), "ok") == 0);
     CHECK(strcmp(augur_status_str(AUGUR_STATUS_INVALID_MODEL), "invalid model") == 0);
+    CHECK(strcmp(augur_status_str(AUGUR_STATUS_USER_STORE), "user store error") == 0);
     CHECK(strcmp(augur_status_str(-1), "unknown status") == 0);
 
     test_predict();
+    test_user_model();
     test_errors();
 
     if (failures == 0) {

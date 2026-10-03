@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <cstdio>
 #include <thread>
 
 #include <catch2/catch_test_macros.hpp>
@@ -82,4 +83,51 @@ TEST_CASE("failures throw augur::Error with the library's message") {
     const augur::Engine empty;
     CHECK_FALSE(empty);
     CHECK_THROWS_AS(empty.predict("the "), augur::Error);
+}
+
+TEST_CASE("learns from the user and saves to a store") {
+    std::remove(AUGUR_TEST_STORE);
+    augur::Options options;
+    options.user_store = AUGUR_TEST_STORE;
+    options.weights = augur::Weights{0.6f, 0.3f, 0.1f};
+    options.user_limits = augur::UserLimits{};
+    options.recency = augur::Recency{};
+    {
+        const augur::Engine engine{"en", AUGUR_TEST_MODEL, options};
+        CHECK(engine.learning());
+        for (const char* word : {"I", "like", "Zanzibar", "a", "lot."}) {
+            engine.learn(word);
+        }
+        CHECK(engine.predict("I like ", {}, 1).at(0).text == "Zanzibar");
+        try {
+            augur::Engine second{"en", AUGUR_TEST_MODEL, options};
+            FAIL("expected the store to be locked");
+        } catch (const augur::Error& e) {
+            CHECK(e.status() == augur::Status::user_store);
+        }
+    }
+    const augur::Engine engine{"en", AUGUR_TEST_MODEL, options};
+    CHECK(engine.predict("I like ", {}, 1).at(0).text == "Zanzibar");
+    engine.forget("Zanzibar");
+    CHECK(engine.predict("I like ", {}, 1).at(0).text != "Zanzibar");
+
+    engine.set_learning(false);
+    CHECK_FALSE(engine.learning());
+    engine.learn("I like Zanzibar.");
+    CHECK(engine.predict("I like ", {}, 1).at(0).text != "Zanzibar");
+    engine.set_learning(true);
+    engine.reset_learning_context();
+    engine.clear();
+    engine.flush();
+}
+
+TEST_CASE("invalid options throw") {
+    augur::Options options;
+    options.weights = augur::Weights{-1.0f, 0.0f, 0.0f};
+    try {
+        augur::Engine engine{"en", AUGUR_TEST_MODEL, options};
+        FAIL("expected an exception");
+    } catch (const augur::Error& e) {
+        CHECK(e.status() == augur::Status::invalid_argument);
+    }
 }

@@ -49,6 +49,7 @@ clap = { version = "4.6.7", features = ["derive"] }
 crc32fast = "1.5.2"
 quick-xml = { version = "0.42.0", features = ["escape-html"] }
 rayon = "1.12.0"
+redb = "4.3.0"
 sha1 = "0.11.0"
 thiserror = "2.0.21"
 unicode-normalization = "0.1.25"

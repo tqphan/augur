@@ -4,8 +4,8 @@
 //
 // Errors are reported as augur::Error exceptions. Define AUGUR_NO_EXCEPTIONS
 // before including this header to use status codes instead: the throwing
-// constructor and member functions are then left out, and the noexcept
-// Engine::create, try_predict and try_learn remain.
+// constructor and member functions are then left out, and Engine::create and
+// the try_* member functions remain.
 
 #ifndef AUGUR_HPP
 #define AUGUR_HPP
@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -44,6 +45,7 @@ enum class Status : augur_status {
     io = AUGUR_STATUS_IO,
     internal = AUGUR_STATUS_INTERNAL,
     invalid_model = AUGUR_STATUS_INVALID_MODEL,
+    user_store = AUGUR_STATUS_USER_STORE,
 };
 
 /// Human-readable description of a status.
@@ -77,11 +79,82 @@ struct Suggestion {
     float prob = 0.0f;
 };
 
+/// Relative weights of the predictors (only their ratios matter).
+struct Weights {
+    float ngram = 0.6f;
+    float user = 0.3f;
+    float recency = 0.1f;
+};
+
+/// Limits of the user model.
+struct UserLimits {
+    /// The most words and n-grams kept; all counts are halved while there
+    /// are more.
+    std::size_t max_entries = 300000;
+    /// Halve all counts every this many learned words (0: never).
+    std::uint64_t decay_interval = 200000;
+    /// Save every this many learned words (0: only on flush and destruction).
+    std::uint64_t autosave_interval = 256;
+};
+
+/// Configuration of the recency predictor.
+struct Recency {
+    /// How many recent words are remembered.
+    std::size_t capacity = 1000;
+    /// After how many newer words an occurrence counts half.
+    float half_life = 100.0f;
+};
+
+/// Engine configuration. Unset fields keep the library's defaults (which
+/// match the default member values above).
+struct Options {
+    /// File the user model is saved in (UTF-8); unset or empty: memory only.
+    std::optional<std::string> user_store;
+    std::optional<Weights> weights;
+    /// Whether the engine starts with learning on (default true).
+    std::optional<bool> learning;
+    std::optional<UserLimits> user_limits;
+    std::optional<Recency> recency;
+};
+
 namespace detail {
 
 struct EngineDeleter {
     void operator()(augur_engine* engine) const noexcept { augur_engine_free(engine); }
 };
+
+struct OptionsDeleter {
+    void operator()(augur_options* options) const noexcept { augur_options_free(options); }
+};
+
+/// Builds C options; returns the first failing status.
+inline Status make_options(const Options& in,
+                           std::unique_ptr<augur_options, OptionsDeleter>& out) noexcept {
+    augur_options* raw = nullptr;
+    auto status = static_cast<Status>(augur_options_new(&raw));
+    out.reset(raw);
+    if (status == Status::ok && in.user_store) {
+        status = static_cast<Status>(augur_options_set_user_store(
+            raw, in.user_store->data(), in.user_store->size()));
+    }
+    if (status == Status::ok && in.weights) {
+        status = static_cast<Status>(augur_options_set_weights(
+            raw, in.weights->ngram, in.weights->user, in.weights->recency));
+    }
+    if (status == Status::ok && in.learning) {
+        status = static_cast<Status>(augur_options_set_learning(raw, *in.learning));
+    }
+    if (status == Status::ok && in.user_limits) {
+        status = static_cast<Status>(augur_options_set_user_limits(
+            raw, in.user_limits->max_entries, in.user_limits->decay_interval,
+            in.user_limits->autosave_interval));
+    }
+    if (status == Status::ok && in.recency) {
+        status = static_cast<Status>(
+            augur_options_set_recency(raw, in.recency->capacity, in.recency->half_life));
+    }
+    return status;
+}
 
 struct SuggestionsDeleter {
     void operator()(augur_suggestions* list) const noexcept { augur_suggestions_free(list); }
@@ -112,9 +185,21 @@ public:
     /// n-gram model file at `model_path` (UTF-8), storing it in `out`.
     static Status create(std::string_view language, std::string_view model_path,
                          Engine& out) noexcept {
+        return create(language, model_path, Options{}, out);
+    }
+
+    /// Creates an engine configured by `options`, storing it in `out`.
+    static Status create(std::string_view language, std::string_view model_path,
+                         const Options& options, Engine& out) noexcept {
+        std::unique_ptr<augur_options, detail::OptionsDeleter> raw_options;
+        auto status = detail::make_options(options, raw_options);
+        if (status != Status::ok) {
+            return status;
+        }
         augur_engine* handle = nullptr;
-        const auto status = static_cast<Status>(augur_engine_new(
-            language.data(), language.size(), model_path.data(), model_path.size(), &handle));
+        status = static_cast<Status>(
+            augur_engine_new_with_options(language.data(), language.size(), model_path.data(),
+                                          model_path.size(), raw_options.get(), &handle));
         if (status == Status::ok) {
             out.handle_.reset(handle);
         }
@@ -152,15 +237,49 @@ public:
         return Status::ok;
     }
 
-    /// Feeds committed text to the engine so that predictors can learn.
+    /// Feeds committed text to the engine so that predictors can learn. Text
+    /// may be passed in pieces down to single words; each piece continues
+    /// the previous sentence unless it ended or reset_learning_context was
+    /// called.
     Status try_learn(std::string_view text) const noexcept {
         return static_cast<Status>(augur_learn(handle_.get(), text.data(), text.size()));
     }
+
+    /// Makes the next learn start a new text (e.g. another input field).
+    Status try_reset_learning_context() const noexcept {
+        return static_cast<Status>(augur_reset_learning_context(handle_.get()));
+    }
+
+    /// Turns learning on or off (e.g. off for password fields).
+    Status try_set_learning(bool on) const noexcept {
+        return static_cast<Status>(augur_set_learning(handle_.get(), on));
+    }
+
+    /// Whether learn learns (false for an empty engine).
+    bool learning() const noexcept { return augur_is_learning(handle_.get()); }
+
+    /// Forgets the words of `text` (normally one word), also in the store.
+    Status try_forget(std::string_view text) const noexcept {
+        return static_cast<Status>(augur_forget(handle_.get(), text.data(), text.size()));
+    }
+
+    /// Forgets everything learned, also in the store.
+    Status try_clear() const noexcept { return static_cast<Status>(augur_clear(handle_.get())); }
+
+    /// Saves learned data that is not saved yet. Also done periodically and
+    /// on destruction (ignoring errors then).
+    Status try_flush() const noexcept { return static_cast<Status>(augur_flush(handle_.get())); }
 
 #ifndef AUGUR_NO_EXCEPTIONS
     /// Creates an engine; throws augur::Error on failure.
     Engine(std::string_view language, std::string_view model_path) {
         detail::check(create(language, model_path, *this));
+    }
+
+    /// Creates an engine configured by `options`; throws augur::Error on
+    /// failure.
+    Engine(std::string_view language, std::string_view model_path, const Options& options) {
+        detail::check(create(language, model_path, options, *this));
     }
 
     /// Predicts up to `max` words; throws augur::Error on failure.
@@ -173,6 +292,21 @@ public:
 
     /// Feeds committed text to the engine; throws augur::Error on failure.
     void learn(std::string_view text) const { detail::check(try_learn(text)); }
+
+    /// Makes the next learn start a new text; throws augur::Error on failure.
+    void reset_learning_context() const { detail::check(try_reset_learning_context()); }
+
+    /// Turns learning on or off; throws augur::Error on failure.
+    void set_learning(bool on) const { detail::check(try_set_learning(on)); }
+
+    /// Forgets the words of `text`; throws augur::Error on failure.
+    void forget(std::string_view text) const { detail::check(try_forget(text)); }
+
+    /// Forgets everything learned; throws augur::Error on failure.
+    void clear() const { detail::check(try_clear()); }
+
+    /// Saves learned data; throws augur::Error on failure.
+    void flush() const { detail::check(try_flush()); }
 #endif
 
 private:

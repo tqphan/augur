@@ -4,8 +4,10 @@ use augur_core::{Combiner, PredictorOutput, SourceMask, Suggestion};
 
 /// Linear interpolation: a word's probability is the weighted sum of the
 /// probabilities the predictors gave it, `Σ wᵢ · pᵢ`, with the weights
-/// normalized to sum to 1 over the predictors in the engine. A predictor
-/// that did not propose a word contributes 0 for it.
+/// normalized to sum to 1 over the predictors that proposed any word for
+/// the request (so that, e.g., a user model that has learned nothing yet
+/// does not dilute the others). A predictor that did not propose a word
+/// contributes 0 for it.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct LinearCombiner {
     weights: Vec<f32>,
@@ -37,7 +39,11 @@ impl LinearCombiner {
 
 impl Combiner for LinearCombiner {
     fn combine(&self, outputs: &[PredictorOutput<'_>], max: usize) -> Vec<Suggestion> {
-        let total: f32 = outputs.iter().map(|o| self.weight(o.index)).sum();
+        let total: f32 = outputs
+            .iter()
+            .filter(|o| !o.candidates.is_empty())
+            .map(|o| self.weight(o.index))
+            .sum();
         if total <= 0.0 {
             return Vec::new();
         }
@@ -146,5 +152,12 @@ mod tests {
         assert!(out.is_empty());
         let out = combine(&LinearCombiner::with_weights([0.0]), &lists, 10);
         assert_combined(&out, &[("b", 1.0)]);
+    }
+
+    #[test]
+    fn renormalizes_over_predictors_with_candidates() {
+        let lists = [candidates(&[("a", 1.0)]), Vec::new(), candidates(&[])];
+        let out = combine(&LinearCombiner::with_weights([0.6, 0.3, 0.1]), &lists, 10);
+        assert_combined(&out, &[("a", 1.0)]);
     }
 }

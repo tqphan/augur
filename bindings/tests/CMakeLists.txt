@@ -20,12 +20,14 @@ set(AUGUR_TEST_MODEL "${PROJECT_SOURCE_DIR}/testdata/tiny.bin")
 # C smoke test, linked once statically and once against the shared library.
 add_executable(augur_c_static c/smoke.c)
 target_link_libraries(augur_c_static PRIVATE Augur::augur_static)
-target_compile_definitions(augur_c_static PRIVATE AUGUR_TEST_MODEL="${AUGUR_TEST_MODEL}")
+target_compile_definitions(augur_c_static PRIVATE AUGUR_TEST_MODEL="${AUGUR_TEST_MODEL}"
+  AUGUR_TEST_STORE="c_static_user.redb")
 add_test(NAME c_smoke_static COMMAND augur_c_static)
 
 add_executable(augur_c_shared c/smoke.c)
 target_link_libraries(augur_c_shared PRIVATE Augur::augur_shared)
-target_compile_definitions(augur_c_shared PRIVATE AUGUR_TEST_MODEL="${AUGUR_TEST_MODEL}")
+target_compile_definitions(augur_c_shared PRIVATE AUGUR_TEST_MODEL="${AUGUR_TEST_MODEL}"
+  AUGUR_TEST_STORE="c_shared_user.redb")
 add_test(NAME c_smoke_shared COMMAND augur_c_shared)
 if(WIN32)
   # Put augur_capi.dll next to the test executable.
@@ -37,11 +39,13 @@ endif()
 # C++ wrapper tests.
 add_executable(augur_cpp_tests cpp/test_augur.cpp)
 target_link_libraries(augur_cpp_tests PRIVATE Augur::augur_cpp Catch2::Catch2WithMain)
-target_compile_definitions(augur_cpp_tests PRIVATE AUGUR_TEST_MODEL="${AUGUR_TEST_MODEL}")
+target_compile_definitions(augur_cpp_tests PRIVATE AUGUR_TEST_MODEL="${AUGUR_TEST_MODEL}"
+  AUGUR_TEST_STORE="cpp_user.redb")
 catch_discover_tests(augur_cpp_tests TEST_PREFIX "cpp: ")
 
 # C++ wrapper without exceptions.
 add_executable(augur_cpp_no_exceptions cpp/no_exceptions.cpp)
 target_link_libraries(augur_cpp_no_exceptions PRIVATE Augur::augur_cpp)
-target_compile_definitions(augur_cpp_no_exceptions PRIVATE AUGUR_TEST_MODEL="${AUGUR_TEST_MODEL}")
+target_compile_definitions(augur_cpp_no_exceptions PRIVATE AUGUR_TEST_MODEL="${AUGUR_TEST_MODEL}"
+  AUGUR_TEST_STORE="cpp_no_exceptions_user.redb")
 add_test(NAME cpp_no_exceptions COMMAND augur_cpp_no_exceptions)

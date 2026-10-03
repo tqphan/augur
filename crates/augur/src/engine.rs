@@ -1,15 +1,22 @@
 use std::borrow::Cow;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use augur_core::{
-    Candidate, Combiner, Context, Error, LanguageId, LanguagePack, Predictor, PredictorOutput,
-    Result, SourceMask, Suggestion,
+    Candidate, Combiner, Context, Error, LanguageId, LanguagePack, LearnInput, Predictor,
+    PredictorOutput, Result, SourceMask, Suggestion, Token, is_marker,
 };
 use augur_lang_en::EnglishPack;
 use augur_lm::Model;
-use augur_predictors::NgramPredictor;
+use augur_predictors::{NgramPredictor, RecencyPredictor};
+use augur_user::UserPredictor;
 
-use crate::LinearCombiner;
+use crate::{EngineOptions, LinearCombiner};
+
+/// How much of the most recently learned text is kept as history for the
+/// next [`Engine::learn`] call.
+const LEARN_TAIL_BYTES: usize = 256;
 
 /// A configured prediction engine.
 ///
@@ -18,6 +25,9 @@ pub struct Engine {
     language: Box<dyn LanguagePack>,
     predictors: Vec<Box<dyn Predictor>>,
     combiner: Box<dyn Combiner>,
+    learning: AtomicBool,
+    /// The end of the text learned so far, continued by the next `learn`.
+    learn_tail: Mutex<String>,
 }
 
 impl Engine {
@@ -26,18 +36,35 @@ impl Engine {
         EngineBuilder::default()
     }
 
+    /// Creates an engine for a language from an n-gram model file with the
+    /// default [`EngineOptions`]: the user model learns in memory only.
+    ///
+    /// # Errors
+    ///
+    /// As [`Engine::with_options`].
+    pub fn from_model(language: &str, model: impl AsRef<Path>) -> Result<Self> {
+        Self::with_options(language, model, &EngineOptions::default())
+    }
+
     /// Creates an engine for a language from an n-gram model file, with the
     /// built-in language pack for `language` (a BCP-47 tag; only English,
-    /// `en` and its regional variants, is built in so far), an
-    /// [`NgramPredictor`] and a [`LinearCombiner`].
+    /// `en` and its regional variants, is built in so far), a
+    /// [`UserPredictor`], an [`NgramPredictor`] and a [`RecencyPredictor`]
+    /// (in this order) and a [`LinearCombiner`] with the weights of
+    /// `options`.
     ///
     /// # Errors
     ///
     /// [`Error::InvalidLanguageTag`] or [`Error::UnsupportedLanguage`] for
-    /// the language; [`Error::Io`] if the model cannot be read;
-    /// [`Error::InvalidModel`] if it is invalid or its metadata names a
-    /// different language.
-    pub fn from_model(language: &str, model: impl AsRef<Path>) -> Result<Self> {
+    /// the language; [`Error::Io`] if the model or user store cannot be
+    /// read; [`Error::InvalidModel`] if the model is invalid or its metadata
+    /// names a different language; [`Error::UserStore`] if the user store
+    /// is invalid, for another language or already open.
+    pub fn with_options(
+        language: &str,
+        model: impl AsRef<Path>,
+        options: &EngineOptions,
+    ) -> Result<Self> {
         let id = LanguageId::new(language)?;
         let primary = id
             .as_str()
@@ -58,10 +85,23 @@ impl Engine {
                 id.as_str()
             )));
         }
-        builder
+        let user = match &options.user_store {
+            Some(path) => UserPredictor::open(path, &primary, options.user)?,
+            None => UserPredictor::in_memory(options.user),
+        };
+        let [ngram_weight, user_weight, recency_weight] = options.weights;
+        let engine = builder
+            .predictor(user)
             .predictor(NgramPredictor::new(model))
-            .combiner(LinearCombiner::new())
-            .build()
+            .predictor(RecencyPredictor::new(options.recency))
+            .combiner(LinearCombiner::with_weights([
+                user_weight,
+                ngram_weight,
+                recency_weight,
+            ]))
+            .build()?;
+        engine.set_learning(options.learning);
+        Ok(engine)
     }
 
     /// The language this engine predicts for.
@@ -109,11 +149,157 @@ impl Engine {
     }
 
     /// Feeds committed text to every predictor so it can learn from it.
+    ///
+    /// Text may be passed in pieces of any size, down to single words: each
+    /// call continues the sentence where the previous one stopped, unless
+    /// that sentence ended or [`Engine::reset_learning_context`] was
+    /// called. A space is assumed between the pieces when the new text
+    /// starts with a letter or digit. Does nothing while learning is off.
     pub fn learn(&self, text: &str) {
-        let tokens = self.language.tokenizer().tokenize(text);
-        for predictor in &self.predictors {
-            predictor.learn(&tokens);
+        if !self.is_learning() {
+            return;
         }
+        let mut tail = self.lock_tail();
+        let joined = join(&tail, text);
+        let boundary = joined.len() - text.len();
+        let spans = self.language.tokenizer().tokenize_spans(&joined);
+        let first_new = spans
+            .iter()
+            .position(|s| s.span.start >= boundary)
+            .unwrap_or(spans.len());
+        let (old, new) = spans.split_at(first_new);
+
+        // The learned part of the sentence that the new text continues.
+        let context: Vec<Token> = match new.first() {
+            Some(span) if span.token != Token::SentenceStart => {
+                let start = old
+                    .iter()
+                    .rposition(|s| s.token == Token::SentenceStart)
+                    .unwrap_or(0);
+                old[start..].iter().map(|s| s.token.clone()).collect()
+            }
+            _ => Vec::new(),
+        };
+        if !new.is_empty() {
+            let input = LearnInput {
+                context: &context,
+                tokens: new,
+                text: &joined,
+            };
+            for predictor in &self.predictors {
+                predictor.learn(&input);
+            }
+        }
+        tail_of(&joined).clone_into(&mut tail);
+    }
+
+    /// Makes the next [`Engine::learn`] call start a new text, e.g. when
+    /// the user moves to another input field.
+    pub fn reset_learning_context(&self) {
+        self.lock_tail().clear();
+    }
+
+    /// Turns learning on or off, e.g. off while the user types into a
+    /// password field. Turning it off also resets the learning context.
+    pub fn set_learning(&self, on: bool) {
+        self.learning.store(on, Ordering::Relaxed);
+        if !on {
+            self.reset_learning_context();
+        }
+    }
+
+    /// Whether [`Engine::learn`] learns.
+    pub fn is_learning(&self) -> bool {
+        self.learning.load(Ordering::Relaxed)
+    }
+
+    /// Forgets the words of `text` (normally a single word) in every
+    /// predictor, including saved data, and resets the learning context.
+    ///
+    /// # Errors
+    ///
+    /// The first error of a predictor that could not save the change; the
+    /// remaining predictors still forget.
+    pub fn forget(&self, text: &str) -> Result<()> {
+        self.reset_learning_context();
+        let mut result = Ok(());
+        for token in self.language.tokenizer().tokenize(text) {
+            if let Token::Word(word) = token
+                && !is_marker(&word)
+            {
+                for predictor in &self.predictors {
+                    result = result.and(predictor.forget(&word));
+                }
+            }
+        }
+        result
+    }
+
+    /// Forgets everything learned, including saved data, and resets the
+    /// learning context.
+    ///
+    /// # Errors
+    ///
+    /// The first error of a predictor that could not save the change; the
+    /// remaining predictors still clear.
+    pub fn clear(&self) -> Result<()> {
+        self.reset_learning_context();
+        self.predictors
+            .iter()
+            .map(|p| p.clear())
+            .fold(Ok(()), Result::and)
+    }
+
+    /// Saves learned data that is not saved yet. The engine also saves
+    /// periodically while learning, and when it is dropped (ignoring
+    /// errors then).
+    ///
+    /// # Errors
+    ///
+    /// The first error of a predictor that could not save; the remaining
+    /// predictors still save.
+    pub fn flush(&self) -> Result<()> {
+        self.predictors
+            .iter()
+            .map(|p| p.flush())
+            .fold(Ok(()), Result::and)
+    }
+
+    fn lock_tail(&self) -> std::sync::MutexGuard<'_, String> {
+        self.learn_tail
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// `tail` followed by `text`, with a space between them if `text` starts a
+/// new word right after a previous one.
+fn join(tail: &str, text: &str) -> String {
+    let separate = !tail.is_empty()
+        && !tail.ends_with(char::is_whitespace)
+        && text.starts_with(char::is_alphanumeric);
+    let mut joined = String::with_capacity(tail.len() + 1 + text.len());
+    joined.push_str(tail);
+    if separate {
+        joined.push(' ');
+    }
+    joined.push_str(text);
+    joined
+}
+
+/// The last [`LEARN_TAIL_BYTES`] or so of `text`, starting at a word.
+fn tail_of(text: &str) -> &str {
+    if text.len() <= LEARN_TAIL_BYTES {
+        return text;
+    }
+    let mut cut = text.len() - LEARN_TAIL_BYTES;
+    while !text.is_char_boundary(cut) {
+        cut += 1;
+    }
+    let rest = &text[cut..];
+    match rest.find(char::is_whitespace) {
+        Some(space) => rest[space..].trim_start(),
+        None => "",
     }
 }
 
@@ -180,6 +366,8 @@ impl EngineBuilder {
             language,
             predictors: self.predictors,
             combiner,
+            learning: AtomicBool::new(true),
+            learn_tail: Mutex::default(),
         })
     }
 }
@@ -281,8 +469,9 @@ mod tests {
                     }),
             );
         }
-        fn learn(&self, tokens: &[Token]) {
-            self.learned.lock().unwrap().extend_from_slice(tokens);
+        fn learn(&self, input: &LearnInput<'_>) {
+            let mut learned = self.learned.lock().unwrap();
+            learned.extend(input.tokens.iter().map(|s| s.token.clone()));
         }
     }
 
@@ -359,6 +548,116 @@ mod tests {
             *learned.lock().unwrap(),
             [Token::Word("good".into()), Token::Word("morning".into())]
         );
+
+        engine.set_learning(false);
+        assert!(!engine.is_learning());
+        engine.learn("secret");
+        engine.set_learning(true);
+        engine.learn("again");
+        assert_eq!(learned.lock().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn joins_learned_pieces() {
+        assert_eq!(join("", "hello"), "hello");
+        assert_eq!(join("hello", "world"), "hello world");
+        assert_eq!(join("hello", ", world"), "hello, world");
+        assert_eq!(join("hello ", "world"), "hello world");
+        assert_eq!(join("Hi.", "There"), "Hi. There");
+
+        let long = "word ".repeat(100);
+        let tail = tail_of(&long);
+        assert!(tail.len() <= LEARN_TAIL_BYTES && tail.starts_with("word"));
+        assert_eq!(tail_of("short text"), "short text");
+        assert_eq!(tail_of(&"x".repeat(300)), "");
+    }
+
+    /// Words of the user model's (predictor 0) suggestions.
+    fn from_user(suggestions: &[Suggestion]) -> Vec<&str> {
+        suggestions
+            .iter()
+            .filter(|s| s.sources.contains(0))
+            .map(|s| s.text.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn learns_from_the_user() {
+        let engine = Engine::from_model("en", tiny_model()).unwrap();
+        assert!(from_user(&engine.predict(Context::past("I like "), 10)).is_empty());
+
+        // Learned word by word, across calls, with the user's casing.
+        for word in ["I", "like", "Zanzibar", "a", "lot."] {
+            engine.learn(word);
+        }
+        let out = engine.predict(Context::past("I like "), 10);
+        assert_eq!(texts(&out)[0], "Zanzibar");
+        assert_eq!(from_user(&out)[0], "Zanzibar");
+        let out = engine.predict(Context::past("I like z"), 10);
+        assert_eq!(texts(&out), ["Zanzibar"]);
+        assert!((out[0].prob - 1.0).abs() < 1e-6);
+        // Recency (predictor 2) suggests it anywhere.
+        let out = engine.predict(Context::past("Then z"), 10);
+        assert!(out[0].sources.contains(2));
+
+        // The sentence ended: the next piece starts a new one.
+        engine.learn("Zanzibar");
+        let out = engine.predict(Context::past("Hello. "), 10);
+        assert!(from_user(&out).contains(&"Zanzibar"));
+
+        engine.forget("ZANZIBAR").unwrap();
+        let out = engine.predict(Context::past("I like z"), 10);
+        assert!(out.is_empty(), "{out:?}");
+
+        engine.learn("I like tea.");
+        engine.clear().unwrap();
+        assert!(from_user(&engine.predict(Context::past("I like "), 10)).is_empty());
+        engine.flush().unwrap();
+    }
+
+    #[test]
+    fn saves_the_user_model() {
+        let dir = std::env::temp_dir().join(format!("augur-engine-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = dir.join("user.redb");
+        let _ = std::fs::remove_file(&store);
+        let options = EngineOptions::new().user_store(&store);
+        {
+            let engine = Engine::with_options("en", tiny_model(), &options).unwrap();
+            engine.learn("I like Zanzibar.");
+            // The store is locked while the engine is open.
+            assert!(matches!(
+                Engine::with_options("en", tiny_model(), &options),
+                Err(Error::UserStore(_))
+            ));
+        }
+        let engine = Engine::with_options("en-US", tiny_model(), &options).unwrap();
+        let out = engine.predict(Context::past("I like "), 3);
+        assert_eq!(texts(&out)[0], "Zanzibar");
+        drop(engine);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn options_select_weights_and_learning() {
+        assert!(EngineOptions::new().weights(1.0, -1.0, 0.0).is_err());
+        assert!(EngineOptions::new().weights(0.0, 0.0, 0.0).is_err());
+        assert!(EngineOptions::new().weights(f32::NAN, 1.0, 0.0).is_err());
+
+        // Without the n-gram model, only learned words are suggested.
+        let options = EngineOptions::new()
+            .weights(0.0, 1.0, 0.0)
+            .unwrap()
+            .learning(false);
+        let engine = Engine::with_options("en", tiny_model(), &options).unwrap();
+        assert!(!engine.is_learning());
+        engine.learn("I like Zanzibar.");
+        assert!(engine.predict(Context::past("I like "), 3).is_empty());
+        engine.set_learning(true);
+        engine.learn("I like Zanzibar.");
+        let out = engine.predict(Context::past("I like "), 3);
+        assert_eq!(texts(&out), ["Zanzibar", "I", "like"]);
+        assert!(out.iter().all(|s| s.sources == SourceMask(1)));
     }
 
     fn tiny_model() -> std::path::PathBuf {
@@ -387,7 +686,7 @@ mod tests {
         let out = engine.predict(Context::past("the cat "), 3);
         assert!(texts(&out).contains(&"sat"), "{out:?}");
         assert!(out.windows(2).all(|w| w[0].prob >= w[1].prob));
-        assert!(out.iter().all(|s| s.sources.contains(0)));
+        assert!(out.iter().all(|s| s.sources.contains(1)));
 
         // Probabilities are conditioned on the prefix.
         let out = engine.predict(Context::past("the "), 100);

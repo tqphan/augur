@@ -19,6 +19,11 @@ pub enum Error {
     #[error("invalid model: {0}")]
     InvalidModel(String),
 
+    /// A user store is corrupted, in use by another engine, from an
+    /// incompatible version or for another language.
+    #[error("user store: {0}")]
+    UserStore(String),
+
     /// An I/O error, e.g. while opening a model or user store.
     #[error(transparent)]
     Io(#[from] std::io::Error),

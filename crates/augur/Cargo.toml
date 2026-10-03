@@ -13,6 +13,7 @@ augur-core.workspace = true
 augur-lang-en.workspace = true
 augur-lm.workspace = true
 augur-predictors.workspace = true
+augur-user.workspace = true
 
 [lints]
 workspace = true

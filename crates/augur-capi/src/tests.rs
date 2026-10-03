@@ -84,6 +84,7 @@ fn status_strings() {
     let s = |status| unsafe { CStr::from_ptr(augur_status_str(status)) };
     assert_eq!(s(AUGUR_STATUS_OK), c"ok");
     assert_eq!(s(AUGUR_STATUS_INVALID_MODEL), c"invalid model");
+    assert_eq!(s(AUGUR_STATUS_USER_STORE), c"user store error");
     assert_eq!(s(-1), c"unknown status");
 }
 
@@ -195,4 +196,147 @@ fn panics_become_internal_errors() {
     let status = guard(|| panic!("boom"));
     assert_eq!(status, AUGUR_STATUS_INTERNAL);
     assert_eq!(last_error(), "internal error: boom");
+}
+
+fn learn(engine: *const augur_engine, text: &str) {
+    let status = unsafe { augur_learn(engine, text.as_ptr().cast(), text.len()) };
+    assert_eq!(status, AUGUR_STATUS_OK);
+}
+
+fn new_options() -> *mut augur_options {
+    let mut options = ptr::null_mut();
+    assert_eq!(
+        unsafe { augur_options_new(&raw mut options) },
+        AUGUR_STATUS_OK
+    );
+    assert!(!options.is_null());
+    options
+}
+
+fn new_engine_with(options: *const augur_options) -> Result<*mut augur_engine, augur_status> {
+    let mut engine = ptr::null_mut();
+    let status = unsafe {
+        augur_engine_new_with_options(
+            c"en".as_ptr(),
+            2,
+            TINY.as_ptr().cast(),
+            TINY.len(),
+            options,
+            &raw mut engine,
+        )
+    };
+    if status == AUGUR_STATUS_OK {
+        Ok(engine)
+    } else {
+        assert!(engine.is_null());
+        Err(status)
+    }
+}
+
+#[test]
+fn learns_forgets_and_toggles_learning() {
+    let engine = new_engine_with(ptr::null()).unwrap();
+    assert!(unsafe { augur_is_learning(engine) });
+    learn(engine, "I like");
+    learn(engine, "Zanzibar.");
+    assert_eq!(predict(engine, "I like ", "", 1)[0].0, "Zanzibar");
+
+    let word = "zanzibar";
+    let status = unsafe { augur_forget(engine, word.as_ptr().cast(), word.len()) };
+    assert_eq!(status, AUGUR_STATUS_OK);
+    assert!(predict(engine, "I like z", "", 3).is_empty());
+
+    assert_eq!(
+        unsafe { augur_set_learning(engine, false) },
+        AUGUR_STATUS_OK
+    );
+    assert!(!unsafe { augur_is_learning(engine) });
+    learn(engine, "I like Zanzibar.");
+    assert!(predict(engine, "I like z", "", 3).is_empty());
+    assert_eq!(unsafe { augur_set_learning(engine, true) }, AUGUR_STATUS_OK);
+    learn(engine, "I like Zanzibar.");
+    assert_eq!(
+        unsafe { augur_reset_learning_context(engine) },
+        AUGUR_STATUS_OK
+    );
+    assert_eq!(unsafe { augur_clear(engine) }, AUGUR_STATUS_OK);
+    assert!(predict(engine, "I like z", "", 3).is_empty());
+    assert_eq!(unsafe { augur_flush(engine) }, AUGUR_STATUS_OK);
+
+    assert!(!unsafe { augur_is_learning(ptr::null()) });
+    assert_eq!(
+        unsafe { augur_flush(ptr::null()) },
+        AUGUR_STATUS_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        unsafe { augur_clear(ptr::null()) },
+        AUGUR_STATUS_INVALID_ARGUMENT
+    );
+    unsafe { augur_engine_free(engine) };
+}
+
+#[test]
+fn options_configure_the_engine() {
+    let dir = std::env::temp_dir().join(format!("augur-capi-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dir.join("user.redb");
+    let _ = std::fs::remove_file(&store);
+    let store = store.to_str().unwrap();
+
+    let options = new_options();
+    unsafe {
+        assert_eq!(
+            augur_options_set_user_store(options, store.as_ptr().cast(), store.len()),
+            AUGUR_STATUS_OK
+        );
+        assert_eq!(
+            augur_options_set_weights(options, 0.0, 1.0, 0.0),
+            AUGUR_STATUS_OK
+        );
+        assert_eq!(
+            augur_options_set_weights(options, -1.0, 1.0, 0.0),
+            AUGUR_STATUS_INVALID_ARGUMENT
+        );
+        assert!(last_error().contains("weights"), "{}", last_error());
+        assert_eq!(augur_options_set_learning(options, true), AUGUR_STATUS_OK);
+        assert_eq!(
+            augur_options_set_user_limits(options, 1000, 0, 1),
+            AUGUR_STATUS_OK
+        );
+        assert_eq!(augur_options_set_recency(options, 10, 5.0), AUGUR_STATUS_OK);
+        assert_eq!(
+            augur_options_set_recency(options, 10, f32::NAN),
+            AUGUR_STATUS_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            augur_options_set_weights(ptr::null_mut(), 1.0, 1.0, 1.0),
+            AUGUR_STATUS_INVALID_ARGUMENT
+        );
+    }
+
+    let engine = new_engine_with(options).unwrap();
+    // Only the user model is weighted, so nothing is suggested yet.
+    assert!(predict(engine, "I like ", "", 3).is_empty());
+    learn(engine, "I like Zanzibar.");
+    // The store is in use.
+    assert_eq!(new_engine_with(options), Err(AUGUR_STATUS_USER_STORE));
+    unsafe { augur_engine_free(engine) };
+
+    let engine = new_engine_with(options).unwrap();
+    assert_eq!(predict(engine, "I like ", "", 1)[0].0, "Zanzibar");
+    unsafe {
+        augur_engine_free(engine);
+        assert_eq!(
+            augur_options_set_user_store(options, ptr::null(), 0),
+            AUGUR_STATUS_OK
+        );
+    }
+    let engine = new_engine_with(options).unwrap();
+    assert!(predict(engine, "I like ", "", 3).is_empty());
+    unsafe {
+        augur_engine_free(engine);
+        augur_options_free(options);
+        augur_options_free(ptr::null_mut());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -8,6 +8,7 @@
 #ifndef AUGUR_H
 #define AUGUR_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -18,6 +19,10 @@
 // A prediction engine. Thread-safe: one engine may be used from several
 // threads at once.
 typedef struct augur_engine augur_engine;
+
+// Engine configuration for `augur_engine_new_with_options`. Not
+// thread-safe; it may be freed once the engine is created.
+typedef struct augur_options augur_options;
 
 // A list of suggestions returned by `augur_predict`, most likely first.
 typedef struct augur_suggestions augur_suggestions;
@@ -42,6 +47,10 @@ typedef int32_t augur_status;
 // language.
 #define AUGUR_STATUS_INVALID_MODEL 4
 
+// A user store is corrupted, from an incompatible version, for another
+// language, or already open in another engine.
+#define AUGUR_STATUS_USER_STORE 5
+
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -63,13 +72,84 @@ const char *augur_status_str(augur_status status);
 // call on the same thread.
 const char *augur_last_error(void);
 
-// Creates an engine for `language` (a BCP-47 tag such as `"en"` or
-// `"en-US"`) from the n-gram model file at `model_path`, and stores it in
-// `*out`. Release it with `augur_engine_free`.
+// Creates options with the defaults, and stores them in `*out`: no user
+// store (the user model learns in memory only), weights 0.6 (n-gram), 0.3
+// (user) and 0.1 (recency), learning on, at most 300000 user model
+// entries, halving every 200000 learned words, saving every 256 learned
+// words, and recency over the last 1000 words with a half-life of 100.
+// Release them with `augur_options_free`.
 //
-// Returns `AUGUR_STATUS_INVALID_ARGUMENT` for a malformed or unsupported
-// language, `AUGUR_STATUS_IO` if the model cannot be read and
-// `AUGUR_STATUS_INVALID_MODEL` if it is invalid.
+// # Safety
+//
+// `out` must be a valid pointer to write to.
+augur_status augur_options_new(augur_options **out);
+
+// Releases options. NULL is ignored.
+//
+// # Safety
+//
+// `options` must be NULL or a pointer from `augur_options_new` that has
+// not been freed.
+void augur_options_free(augur_options *options);
+
+// Saves the user model in the file at `path` (UTF-8), created if needed.
+// A length of 0 removes the store: the user model learns in memory only.
+//
+// # Safety
+//
+// `options` must be live options and `path` must point to at least
+// `path_len` readable bytes (or be NULL with length 0).
+augur_status augur_options_set_user_store(augur_options *options,
+                                          const char *path,
+                                          size_t path_len);
+
+// Sets the relative weights of the n-gram, user and recency predictors.
+// Returns `AUGUR_STATUS_INVALID_ARGUMENT`, leaving the weights unchanged,
+// if a weight is negative or not finite, or all are zero.
+//
+// # Safety
+//
+// `options` must be live options.
+augur_status augur_options_set_weights(augur_options *options,
+                                       float ngram,
+                                       float user,
+                                       float recency);
+
+// Sets whether the engine starts with learning on.
+//
+// # Safety
+//
+// `options` must be live options.
+augur_status augur_options_set_learning(augur_options *options, bool on);
+
+// Sets the user model's limits: at most `max_entries` words and n-grams
+// (all counts are halved while there are more), halving every
+// `decay_interval` learned words (0: never on this schedule), and saving
+// every `autosave_interval` learned words (0: only on `augur_flush` and
+// `augur_engine_free`).
+//
+// # Safety
+//
+// `options` must be live options.
+augur_status augur_options_set_user_limits(augur_options *options,
+                                           size_t max_entries,
+                                           uint64_t decay_interval,
+                                           uint64_t autosave_interval);
+
+// Sets the recency predictor to remember the last `capacity` words, an
+// occurrence counting half after `half_life` newer words. Returns
+// `AUGUR_STATUS_INVALID_ARGUMENT` if `half_life` is negative or not
+// finite.
+//
+// # Safety
+//
+// `options` must be live options.
+augur_status augur_options_set_recency(augur_options *options, size_t capacity, float half_life);
+
+// Creates an engine for `language` (a BCP-47 tag such as `"en"` or
+// `"en-US"`) from the n-gram model file at `model_path` with default
+// options, and stores it in `*out`. Release it with `augur_engine_free`.
+// Same as `augur_engine_new_with_options` with NULL options.
 //
 // # Safety
 //
@@ -82,7 +162,32 @@ augur_status augur_engine_new(const char *language,
                               size_t model_path_len,
                               augur_engine **out);
 
-// Releases an engine. NULL is ignored.
+// Creates an engine for `language` (a BCP-47 tag such as `"en"` or
+// `"en-US"`) from the n-gram model file at `model_path`, configured by
+// `options` (NULL for the defaults), and stores it in `*out`. Release it
+// with `augur_engine_free`.
+//
+// Returns `AUGUR_STATUS_INVALID_ARGUMENT` for a malformed or unsupported
+// language, `AUGUR_STATUS_IO` if the model or user store cannot be read,
+// `AUGUR_STATUS_INVALID_MODEL` if the model is invalid and
+// `AUGUR_STATUS_USER_STORE` if the user store is invalid, for another
+// language or already open.
+//
+// # Safety
+//
+// `language` and `model_path` must point to at least `language_len` and
+// `model_path_len` readable bytes (or be NULL with length 0), `options`
+// must be NULL or live options, and `out` must be a valid pointer to write
+// to.
+augur_status augur_engine_new_with_options(const char *language,
+                                           size_t language_len,
+                                           const char *model_path,
+                                           size_t model_path_len,
+                                           const augur_options *options,
+                                           augur_engine **out);
+
+// Releases an engine, first saving what it learned to its user store
+// (ignoring errors; call `augur_flush` to check them). NULL is ignored.
 //
 // # Safety
 //
@@ -108,15 +213,65 @@ augur_status augur_predict(const augur_engine *engine,
                            size_t max,
                            augur_suggestions **out);
 
-// Feeds committed text to the engine so that predictors can learn from
-// it. (The n-gram predictor is static; this matters once learning
-// predictors are added.)
+// Feeds committed text to the engine so that the user model and recency
+// predictor learn from it. Text may be passed in pieces down to single
+// words: each call continues the previous sentence unless it ended or
+// `augur_reset_learning_context` was called; a space is assumed between
+// pieces when the new one starts with a letter or digit. Does nothing
+// while learning is off.
 //
 // # Safety
 //
 // `engine` must be a live engine and `text` must point to at least
 // `text_len` readable bytes (or be NULL with length 0).
 augur_status augur_learn(const augur_engine *engine, const char *text, size_t text_len);
+
+// Makes the next `augur_learn` call start a new text, e.g. when the user
+// moves to another input field.
+//
+// # Safety
+//
+// `engine` must be a live engine.
+augur_status augur_reset_learning_context(const augur_engine *engine);
+
+// Turns learning on or off, e.g. off while the user types a password.
+// Turning it off also resets the learning context.
+//
+// # Safety
+//
+// `engine` must be a live engine.
+augur_status augur_set_learning(const augur_engine *engine, bool on);
+
+// Whether `augur_learn` learns (false for NULL).
+//
+// # Safety
+//
+// `engine` must be NULL or a live engine.
+bool augur_is_learning(const augur_engine *engine);
+
+// Forgets the words of `text` (normally one word), e.g. a mistyped word
+// or something private, including in the user store.
+//
+// # Safety
+//
+// `engine` must be a live engine and `text` must point to at least
+// `text_len` readable bytes (or be NULL with length 0).
+augur_status augur_forget(const augur_engine *engine, const char *text, size_t text_len);
+
+// Forgets everything the engine learned, including in the user store.
+//
+// # Safety
+//
+// `engine` must be a live engine.
+augur_status augur_clear(const augur_engine *engine);
+
+// Saves learned data that is not saved yet to the user store. The engine
+// also saves periodically while learning and when it is freed.
+//
+// # Safety
+//
+// `engine` must be a live engine.
+augur_status augur_flush(const augur_engine *engine);
 
 // Number of suggestions in `list` (0 for NULL).
 //
