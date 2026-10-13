@@ -13,6 +13,10 @@ name = "augur"
 path = "src/main.rs"
 
 [dependencies]
+augur.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

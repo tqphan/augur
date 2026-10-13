@@ -109,6 +109,18 @@ impl Engine {
         self.language.id()
     }
 
+    /// The language pack, e.g. to tokenize text the same way the engine
+    /// does.
+    pub fn language_pack(&self) -> &dyn LanguagePack {
+        &*self.language
+    }
+
+    /// The names of the predictors, in the order of the bits of
+    /// [`Suggestion::sources`].
+    pub fn predictor_names(&self) -> Vec<&str> {
+        self.predictors.iter().map(|p| p.name()).collect()
+    }
+
     /// Returns up to `max` suggestions for the text around the cursor, most
     /// likely first.
     pub fn predict(&self, context: Context<'_>, max: usize) -> Vec<Suggestion> {
@@ -672,6 +684,8 @@ mod tests {
     fn predicts_from_a_model() {
         let engine = Engine::from_model("en-GB", tiny_model()).unwrap();
         assert_eq!(engine.language().as_str(), "en");
+        assert_eq!(engine.language_pack().id().as_str(), "en");
+        assert_eq!(engine.predictor_names(), ["user", "ngram", "recency"]);
 
         // Casing from the model's table, then sentence-start capitals.
         let out = engine.predict(Context::past("I live in "), 2);

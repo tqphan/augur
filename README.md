@@ -6,8 +6,8 @@ it suggests the next word or completes the current one. It runs on Windows,
 Linux and macOS, and has a C API and a header-only C++17 wrapper.
 
 > Status: English prediction from a static n-gram model plus a user model
-> that learns from typed text works end to end, from Rust, C and C++. The
-> CLI and packaging are not implemented yet.
+> that learns from typed text works end to end, from Rust, C, C++ and the
+> `augur` command line. An installable CMake package is not implemented yet.
 
 ## Layout
 
@@ -24,7 +24,7 @@ Linux and macOS, and has a C API and a header-only C++17 wrapper.
 | `crates/augur-lm` | Binary n-gram model format: ARPA import, writer and reader |
 | `crates/augur-predictors` | `NgramPredictor` (static n-gram model) and `RecencyPredictor` (recently typed words) |
 | `crates/augur-user` | `UserPredictor`: trigrams and casing learned from the user, saved in a redb store |
-| `crates/augur-cli` | Placeholder for a later phase |
+| `crates/augur-cli` | `augur` command: `predict`, `info`, `eval` |
 | `testdata` | Tiny English model used by the Rust, C and C++ tests |
 | `xtask` | Developer tasks |
 
@@ -88,6 +88,25 @@ C: `augur_options_new`, `augur_options_set_*`, `augur_engine_new_with_options`,
 `augur_learn`, `augur_set_learning`, `augur_reset_learning_context`,
 `augur_forget`, `augur_clear`, `augur_flush`. C++: `augur::Options` and the
 matching `Engine` members.
+
+### Command line
+
+```sh
+augur predict -m en.bin "He was born in Lon"    # suggestions with probability and sources
+augur info en.bin                                # n-gram counts and provenance
+augur eval -m en.bin text.txt                    # keystroke savings on a plain-text file
+```
+
+`eval` simulates a user typing each line of the file: before every
+character (starting with none typed) the top `-n` suggestions (default 5)
+are shown, and as soon as the word is among them (ignoring case) selecting
+it costs one keystroke. It reports keystroke savings over the letters of
+the words, how often the next word is suggested before its first letter,
+and prediction latency. `--learn` lets the engine learn each sentence after
+it is typed; `--weights NGRAM,USER,RECENCY` changes the combiner weights;
+`--json` prints machine-readable output for every command. With the Simple
+English Wikipedia model, `eval` saves 44% of keystrokes on the GPL text in
+`LICENSE` (53% with `--learn`).
 
 ## Building
 
