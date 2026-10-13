@@ -27,6 +27,12 @@ allow = [
     "bzip2-1.0.6", # libbz2-rs-sys, used only by augur-train
 ]
 
+# cbindgen only generates augur.h at build time (a build-dependency of
+# augur-capi); none of its code is in augur's binaries.
+[[licenses.exceptions]]
+crate = "cbindgen"
+allow = ["MPL-2.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"

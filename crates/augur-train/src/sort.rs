@@ -31,15 +31,28 @@ impl TempDir {
     ///
     /// If the directory cannot be created.
     pub fn new(parent: &Path) -> Result<Self> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        let path = parent.join(format!("augur-train-{}-{nanos}", std::process::id()));
-        fs::create_dir_all(&path).map_err(|e| format!("cannot create {}: {e}", path.display()))?;
-        Ok(Self {
-            path,
-            next_file: AtomicU64::new(0),
-        })
+        // Unique within the process; the clock separates processes that
+        // reuse an id. `create_dir` fails rather than share a directory.
+        static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+        loop {
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            let n = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+            let path = parent.join(format!("augur-train-{}-{n}-{nanos}", std::process::id()));
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    return Ok(Self {
+                        path,
+                        next_file: AtomicU64::new(0),
+                    });
+                }
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(format!("cannot create {}: {e}", path.display()).into()),
+            }
+        }
     }
 
     /// A new, unused file path in the directory.
@@ -353,5 +366,17 @@ mod tests {
         File::create(tmp.file("x")).unwrap();
         drop(tmp);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn temp_dirs_are_distinct() {
+        // Created within the same clock tick on coarse clocks.
+        let dirs: Vec<TempDir> = (0..50)
+            .map(|_| TempDir::new(&std::env::temp_dir()).unwrap())
+            .collect();
+        let mut paths: Vec<&PathBuf> = dirs.iter().map(|d| &d.path).collect();
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), dirs.len());
     }
 }
