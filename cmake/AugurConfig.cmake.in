@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# CMake package for an installed augur SDK:
+#
+#   find_package(Augur 0.1 REQUIRED)
+#   target_link_libraries(my_app PRIVATE Augur::augur_cpp)
+#
+# Targets:
+#   Augur::augur_static  C API, static library
+#   Augur::augur_shared  C API, shared library
+#   Augur::augur_cpp     header-only C++17 wrapper
+#
+# Augur::augur_cpp links Augur::augur_static unless AUGUR_CPP_SHARED is ON
+# when the package is first found. An install holds one build
+# configuration, which is used for all configurations of the project.
+
+@PACKAGE_INIT@
+
+option(AUGUR_CPP_SHARED "Link Augur::augur_cpp against the shared library" OFF)
+
+if(NOT TARGET Augur::augur_static)
+  set(_augur_include "@PACKAGE_CMAKE_INSTALL_INCLUDEDIR@")
+  set(_augur_lib "@PACKAGE_CMAKE_INSTALL_LIBDIR@")
+  set(_augur_bin "@PACKAGE_CMAKE_INSTALL_BINDIR@")
+
+  add_library(Augur::augur_static STATIC IMPORTED)
+  set_target_properties(Augur::augur_static PROPERTIES
+    IMPORTED_LOCATION "${_augur_lib}/@AUGUR_STATIC_FILE@"
+    IMPORTED_LINK_INTERFACE_LANGUAGES C
+    INTERFACE_INCLUDE_DIRECTORIES "${_augur_include}"
+    # System libraries the Rust standard library needs.
+    INTERFACE_LINK_LIBRARIES "@AUGUR_STATIC_LINK_LIBRARIES@"
+    INTERFACE_LINK_OPTIONS "@AUGUR_STATIC_LINK_OPTIONS@")
+
+  add_library(Augur::augur_shared SHARED IMPORTED)
+  set_target_properties(Augur::augur_shared PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_augur_include}")
+  if(WIN32)
+    set_target_properties(Augur::augur_shared PROPERTIES
+      IMPORTED_LOCATION "${_augur_bin}/@AUGUR_SHARED_FILE@"
+      IMPORTED_IMPLIB "${_augur_lib}/@AUGUR_IMPLIB_FILE@")
+  elseif(APPLE)
+    set(_augur_at "@")
+    set_target_properties(Augur::augur_shared PROPERTIES
+      IMPORTED_LOCATION "${_augur_lib}/@AUGUR_SHARED_FILE@"
+      IMPORTED_SONAME "${_augur_at}rpath/@AUGUR_SHARED_FILE@")
+    unset(_augur_at)
+  else()
+    set_target_properties(Augur::augur_shared PROPERTIES
+      IMPORTED_LOCATION "${_augur_lib}/@AUGUR_SHARED_FILE@"
+      IMPORTED_SONAME "@AUGUR_SHARED_FILE@")
+  endif()
+
+  add_library(Augur::augur_cpp INTERFACE IMPORTED)
+  set_target_properties(Augur::augur_cpp PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${_augur_include}"
+    INTERFACE_COMPILE_FEATURES cxx_std_17)
+  if(AUGUR_CPP_SHARED)
+    set_target_properties(Augur::augur_cpp PROPERTIES
+      INTERFACE_LINK_LIBRARIES Augur::augur_shared)
+  else()
+    set_target_properties(Augur::augur_cpp PROPERTIES
+      INTERFACE_LINK_LIBRARIES Augur::augur_static)
+  endif()
+
+  unset(_augur_include)
+  unset(_augur_lib)
+  unset(_augur_bin)
+endif()
+
+check_required_components(Augur)

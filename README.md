@@ -7,7 +7,7 @@ Linux and macOS, and has a C API and a header-only C++17 wrapper.
 
 > Status: English prediction from a static n-gram model plus a user model
 > that learns from typed text works end to end, from Rust, C, C++ and the
-> `augur` command line. An installable CMake package is not implemented yet.
+> `augur` command line, and the C/C++ SDK installs as a CMake package.
 
 ## Layout
 
@@ -115,7 +115,7 @@ the C/C++ SDK, CMake 3.22+ and a C/C++ compiler.
 
 ```sh
 cargo xtask ci          # fmt check, clippy, Rust tests, C header check
-cargo xtask sdk         # build and test the C/C++ SDK with CMake
+cargo xtask sdk         # build and test the C/C++ SDK with CMake, and its install
 ```
 
 If `cmake` is not on your `PATH` (e.g. you use the copy bundled with Visual
@@ -128,12 +128,36 @@ cargo xtask sdk
 
 ### Using from CMake
 
+From source (needs Rust):
+
 ```cmake
 add_subdirectory(path/to/augur)
 target_link_libraries(my_app PRIVATE Augur::augur_cpp)   # or Augur::augur_static / Augur::augur_shared
 ```
 
-An installable `find_package(Augur)` package is planned for phase 4.
+Or install the SDK once and use it without Rust:
+
+```sh
+cmake -S . -B build/release -DCMAKE_BUILD_TYPE=Release
+cmake --build build/release --config Release
+cmake --install build/release --config Release --prefix /path/to/augur-sdk
+```
+
+```cmake
+find_package(Augur 0.1 REQUIRED)                          # with CMAKE_PREFIX_PATH=/path/to/augur-sdk
+target_link_libraries(my_app PRIVATE Augur::augur_cpp)
+```
+
+The install holds `include/augur.h` and `augur.hpp`, the static library,
+the shared library (`bin/augur_capi.dll` plus its import library on
+Windows) and `lib/cmake/Augur`. It is relocatable and holds one build
+configuration (normally Release), used for every configuration of your
+project. `Augur::augur_cpp` links the static library; set
+`AUGUR_CPP_SHARED=ON` before `find_package` to link the shared one, which
+must then be found at run time (next to the executable on Windows, through
+the rpath on Linux and macOS). `cargo xtask sdk` tests the install with a
+separate project in `bindings/tests/consumer`, using a prefix under
+`build/`.
 
 ## Training an English model
 

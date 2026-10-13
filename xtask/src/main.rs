@@ -10,8 +10,10 @@ usage: cargo xtask <task>
 
 tasks:
   ci            fmt check, clippy, tests, C header check
-  sdk [CONFIG]  configure, build and test the C/C++ SDK with CMake
-                (CONFIG defaults to Debug)
+  sdk [CONFIG]  configure, build and test the C/C++ SDK with CMake, then
+                install it into build/sdk-install and test a separate
+                find_package(Augur) project against it (CONFIG defaults
+                to Debug)
   check-header  fail if crates/augur-capi/include/augur.h differs from git
 
 environment:
@@ -80,11 +82,54 @@ fn sdk(config: &str) -> TaskResult {
         config,
         "--parallel",
     ]))?;
-    run(Command::new(ctest).arg("--test-dir").arg(&build_dir).args([
-        "-C",
-        config,
-        "--output-on-failure",
-    ]))
+    run(Command::new(&ctest)
+        .arg("--test-dir")
+        .arg(&build_dir)
+        .args(["-C", config, "--output-on-failure"]))?;
+
+    // Install into a throwaway prefix inside build/ (never a system
+    // location) and build a separate project against it with
+    // find_package(Augur), linking the C++ wrapper statically and shared.
+    let prefix = root.join("build").join("sdk-install");
+    remove_dir(&prefix)?;
+    run(Command::new(&cmake)
+        .arg("--install")
+        .arg(&build_dir)
+        .args(["--config", config, "--prefix"])
+        .arg(&prefix))?;
+    for cpp_shared in ["OFF", "ON"] {
+        let consumer_dir = root
+            .join("build")
+            .join(format!("consumer-cpp-shared-{}", cpp_shared.to_lowercase()));
+        remove_dir(&consumer_dir)?;
+        run(Command::new(&cmake)
+            .arg("-S")
+            .arg(root.join("bindings").join("tests").join("consumer"))
+            .arg("-B")
+            .arg(&consumer_dir)
+            .arg(format!("-DCMAKE_PREFIX_PATH={}", prefix.display()))
+            .arg(format!("-DCMAKE_BUILD_TYPE={config}"))
+            .arg(format!("-DAUGUR_CPP_SHARED={cpp_shared}")))?;
+        run(Command::new(&cmake)
+            .arg("--build")
+            .arg(&consumer_dir)
+            .args(["--config", config, "--parallel"]))?;
+        run(Command::new(&ctest)
+            .arg("--test-dir")
+            .arg(&consumer_dir)
+            .args(["-C", config, "--output-on-failure"]))?;
+    }
+    Ok(())
+}
+
+/// Removes a directory under build/ and everything in it, if it exists.
+fn remove_dir(dir: &Path) -> TaskResult {
+    assert!(dir.starts_with(workspace_root().join("build")));
+    match std::fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot remove {}: {e}", dir.display())),
+    }
 }
 
 fn check_header() -> TaskResult {

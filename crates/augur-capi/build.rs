@@ -7,6 +7,17 @@ fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=cbindgen.toml");
 
+    // Give the shared library a SONAME, so that programs linked against an
+    // installed copy find it by name rather than by its build path. (On
+    // Apple platforms rustc already sets the install name to @rpath/….)
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    if matches!(
+        target_os.as_str(),
+        "linux" | "android" | "freebsd" | "netbsd" | "openbsd" | "dragonfly" | "illumos"
+    ) {
+        println!("cargo:rustc-cdylib-link-arg=-Wl,-soname,libaugur_capi.so");
+    }
+
     let config = cbindgen::Config::from_file(crate_dir.join("cbindgen.toml"))
         .expect("failed to read cbindgen.toml");
     cbindgen::Builder::new()
